@@ -1,13 +1,11 @@
 package com.example.galleryproject;
 
 import android.Manifest;
-import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.net.Uri;
+
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.Settings;
 import android.util.Log;
 import android.widget.Toast;
 
@@ -60,6 +58,7 @@ import java.util.stream.Collectors;
 
 public class MainActivity extends AppCompatActivity {
     public final int READ_REQUEST_CODE = 1001;
+    public int requestCode = 0;
 
     public static final String BASE_DIRECTORY_PATH = "DCIM/Camera";
     public static final String EXTENSION_TYPE = ".jpg";
@@ -67,7 +66,6 @@ public class MainActivity extends AppCompatActivity {
     private static final int IMAGE_TIME_RANGE = 7;
     public static final String TENSORFLOW_MODEL_PATH = "kanghee_model.tflite";
 
-    private List<File> targetFiles;
     private List<Image> selectedImages;
 
     private List<Integer> objectPriority = new ArrayList<>();
@@ -79,6 +77,8 @@ public class MainActivity extends AppCompatActivity {
 
     private ImageCollectionViewModel collectionViewModel;
     private AppDatabase mDb;
+
+    private List<AsyncTask> tasks = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -98,11 +98,57 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onPause() {
+        super.onPause();
+
+        for (AsyncTask task: tasks) {
+            task.cancel(false);
+        }
+    }
+
+    @Override
     protected void onResume(){
         super.onResume();
 
-        AppExecutors.getInstance().diskIO().execute(() -> {
-            fetchImageCollections();
+        if (requestCode != READ_REQUEST_CODE) {
+            Log.e("TEST", "TESTTEST");
+            return;
+        }
+
+        AppExecutors.getInstance().diskIO().execute(()->{
+            List<DbPriority> priorities = mDb.dbPriorityDao().getAll();
+            if (priorities.size() != 4) {
+                return;
+            }
+
+            objectPriority = new ArrayList<>();
+            objectPriority.add(0);
+            objectPriority.add(0);
+            objectPriority.add(0);
+            objectPriority.add(0);
+            objectPriority.add(0);
+
+            for (DbPriority priority : priorities) {
+                objectPriority.set(priority.rank, priority.category);
+            }
+
+            objectPriority.set(4, Category.ETC);
+            int[] priority = objectPriority.stream()
+                    .mapToInt(Integer::intValue)
+                    .toArray();
+
+            ImageGroupLabelAnalyzer.setLabelPriority(priority);
+
+            selectedImages = getImagesIfNotProcessed();
+            imageOrderIdx = 0;
+            partedImages = splitImagesInDayRange(selectedImages, IMAGE_TIME_RANGE);
+
+            if (partedImages.size() > 0) {
+                Image[] images = partedImages.get(imageOrderIdx).stream()
+                        .toArray(Image[]::new);
+
+                tasks.add(new ImageGroupAsyncTask(() -> {}).execute(images));
+            }
         });
     }
 
@@ -118,24 +164,11 @@ public class MainActivity extends AppCompatActivity {
         AppExecutors.getInstance()
                 .diskIO()
                 .execute(() -> {
-
                     // 이미지 파일 목록 추출
-                    targetFiles = getListOfFile();
-                    selectedImages = targetFiles.stream()
-                            .map(UnitImage::new)
-                            .collect(Collectors.toList());
-
-                    // 이미 데이터베이스에 저장되어 있는 파일 제거
-                    List<DbImage> dbImages = mDb.dbImageDao().getAll();
-                    List<Image> newImages = dbImages.stream()
-                            .map(x -> new DbImageAdapter(x))
-                            .collect(Collectors.toList());
-
-                    selectedImages.removeIf((image) -> newImages.contains(image));
+                    selectedImages = getImagesIfNotProcessed();
 
                     imageOrderIdx = 0;
                     partedImages = splitImagesInDayRange(selectedImages, IMAGE_TIME_RANGE);
-
 
                     List<DbPriority> priorities = mDb.dbPriorityDao().getAll();
                     if (priorities.size() != 4) {
@@ -144,7 +177,6 @@ public class MainActivity extends AppCompatActivity {
                             SurveyDialogFragment survey = SurveyDialogFragment.getInstance();
                             survey.show(this.getSupportFragmentManager(), "Survey Dialog");
                             survey.setSurveyClickListener((ArrayList<String> categories) -> {
-
                                 for (int i = 0; i < categories.size(); i++) {
                                     String category = categories.get(i);
                                     int categoryInt = Category.getValue(category);
@@ -169,9 +201,7 @@ public class MainActivity extends AppCompatActivity {
                                 if (partedImages.size() > 0) {
                                     Image[] images = partedImages.get(imageOrderIdx).stream()
                                             .toArray(Image[]::new);
-
-                                    new ImageGroupAsyncTask(() -> {
-                                    }).execute(images);
+                                    tasks.add(new ImageGroupAsyncTask(() -> {}).execute(images));
                                 }
                             });
                         });
@@ -198,11 +228,26 @@ public class MainActivity extends AppCompatActivity {
                             Image[] images = partedImages.get(imageOrderIdx).stream()
                                     .toArray(Image[]::new);
 
-                            new ImageGroupAsyncTask(() -> {
-                            }).execute(images);
+                            tasks.add(new ImageGroupAsyncTask(() -> {}).execute(images));
                         }
                     }
                 });
+    }
+
+    private List<Image> getImagesIfNotProcessed(){
+        List<File> files = getListOfFile();
+        List<Image> targetImages = files.stream()
+                .map(UnitImage::new)
+                .collect(Collectors.toList());
+
+        // 이미 데이터베이스에 저장되어 있는 파일 제거
+        List<DbImage> dbImages = mDb.dbImageDao().getAll();
+        List<Image> newImages = dbImages.stream()
+                .map(x -> new DbImageAdapter(x))
+                .collect(Collectors.toList());
+
+        targetImages.removeIf((image) -> newImages.contains(image));
+        return targetImages;
     }
 
     private void initLayout() {
@@ -219,7 +264,6 @@ public class MainActivity extends AppCompatActivity {
         NavController navController = Navigation.findNavController(this, R.id.nav_host_fragment);
         NavigationUI.setupActionBarWithNavController(this, navController, appBarConfiguration);
         NavigationUI.setupWithNavController(navView, navController);
-
     }
 
     @WorkerThread
@@ -234,7 +278,7 @@ public class MainActivity extends AppCompatActivity {
         int offset = 0;
         int size = -1;
         while ((offset == 0 && size == -1) ||
-                (size != 0)) {
+               (size != 0)) {
             List<ImageCollection> collections =
                     DatabaseUtils.getCollectionsFromDbByRange(mDb, 10, offset);
 
@@ -358,6 +402,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        requestCode = requestCode;
         switch (requestCode) {
             case READ_REQUEST_CODE: {
                 // If request is cancelled, the result arrays are empty.
@@ -371,12 +416,6 @@ public class MainActivity extends AppCompatActivity {
                     // permission denied, boo! Disable the
                     // functionality that depends on this permission.
                     System.exit(-1);
-//                    Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:" + BuildConfig.APPLICATION_ID));
-//                    intent.addCategory(Intent.CATEGORY_DEFAULT);
-//                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-//                    intent.addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY);
-//                    intent.addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
-//                    startActivityForResult(intent, 1000);
                 }
                 return;
             }
@@ -437,14 +476,12 @@ public class MainActivity extends AppCompatActivity {
                 for(int i = 0; i < input.length; i++)
                     Log.e("PRIORITY : ", "size : " + input.length + " == " + priority.length + "  /  " + priority[i][0] + "");
 
-                List<Image> images = result.getGroups().get(0).getImages();
                 List<Image> repImages = model.getRepImages(analyzer.getRepImageCandidate(), priority);
 
                 // 세 장을 선택
                 result.setRepImages(repImages.subList(0, repImages.size() > 3 ? 3 : repImages.size()));
 
                 collectionViewModel.insert(result);
-//                adapter.notifyItemInserted(position);
 
                 listener.onFinished();
 
@@ -463,10 +500,6 @@ public class MainActivity extends AppCompatActivity {
                     List<Long> dbImageGroupIds =
                             mDb.dbImageCollectionDao()
                                     .insertWithGroups((int) collectionId, newDbImageGroups);
-
-//                    List<List<Image>> newGroupOfImages = result.getGroups().stream()
-//                                                               .map(ImageGroup::getImages)
-//                                                               .collect(Collectors.toList());
 
                     List<Long> imageIdsForRepImage = new ArrayList<>();
 
@@ -493,8 +526,6 @@ public class MainActivity extends AppCompatActivity {
                                 }
                             }
                         }
-
-
 
                         // DbImage <- DbLabel
                         List<LabelGroup> labelGroup = labelGroups.get(i);
@@ -559,8 +590,7 @@ public class MainActivity extends AppCompatActivity {
             for (ImageGroup group : groups) {
                 // 시간 그룹 내에서 유사도 클러스터링 실행
                 Image[] timeImages = new Image[group.getImages().size()];
-
-                new SimGroupAsyncTask(() -> startNextImages(latch)).execute(group.getImages().toArray(timeImages));
+                tasks.add(new SimGroupAsyncTask(() -> startNextImages(latch)).execute(group.getImages().toArray(timeImages)));
             }
 
             if (groups.size() <= 0) {
@@ -586,7 +616,7 @@ public class MainActivity extends AppCompatActivity {
                 Image[] nextImages = new Image[nextImagesCount];
                 partedImages.get(imageOrderIdx).toArray(nextImages);
 
-                new ImageGroupAsyncTask(() -> {}).execute(nextImages);
+                tasks.add(new ImageGroupAsyncTask(() -> {}).execute(nextImages));
             }
         }
     }

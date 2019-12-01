@@ -23,7 +23,6 @@
             android:layout_gravity="right"
             android:gravity="center"
             android:background="@color/black"
-            android:text="3"
             android:textColor="@color/white"
             android:textSize="@dimen/mapMarker_textSize" />
 </FrameLayout>
