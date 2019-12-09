@@ -100,10 +100,14 @@ public class PhotoGroupActivity extends AppCompatActivity {
         });
 
         saveButton.setOnClickListener((view) -> {
+            String memo = photoGroup_Memo_editText.getText().toString();
+            imageCollection.setMemo(memo);
+
             photoGroup_Memo_editText.setVisibility(View.GONE);
             photoGroup_Memo_textView.setVisibility(View.VISIBLE);
-            photoGroup_Memo_textView.setText(photoGroup_Memo_editText.getText());
+            photoGroup_Memo_textView.setText(memo);
             photoGroup_Memo_editText.clearFocus();
+
             imm.hideSoftInputFromWindow(photoGroup_Memo_editText.getWindowToken(), 0);
             saveButton.setVisibility(View.GONE);
 
@@ -115,11 +119,19 @@ public class PhotoGroupActivity extends AppCompatActivity {
                             .diskIO()
                             .execute(() -> AppDatabase.getInstance(this)
                                                       .dbImageCollectionDao()
-                                                      .updateMemo(dcId, photoGroup_Memo_editText.getText().toString()));
+                                                      .updateMemo(dcId, memo));
             }
         });
 
         photoGroup_backButton.setOnClickListener((view) -> finish());
+    }
+
+    @Override
+    public void finish(){
+        Intent result = new Intent();
+        result.putExtra("ImageCollection", this.imageCollection);
+        setResult(RESULT_OK, result);
+        super.finish();
     }
 
     class Adapter extends RecyclerView.Adapter<Adapter.ViewHolder>{

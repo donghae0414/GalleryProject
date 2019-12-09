@@ -17,7 +17,7 @@ public abstract class DbImageCollectionDao {
     @Query("SELECT * FROM image_collection")
     public abstract List<DbImageCollection> getAll();
 
-    @Query("SELECT * FROM image_collection LIMIT :count OFFSET :offset")
+    @Query("SELECT * FROM image_collection ORDER BY start_time DESC LIMIT :count OFFSET :offset")
     public abstract List<DbImageCollection> getRange(int count, int offset);
 
     @Query("SELECT * FROM image_collection WHERE id = (:id)")
