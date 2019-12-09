@@ -1,6 +1,7 @@
 package com.example.galleryproject;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 
 import android.os.AsyncTask;
@@ -49,6 +50,10 @@ import androidx.navigation.ui.NavigationUI;
 import org.tensorflow.lite.Interpreter;
 
 import java.io.File;
+import java.nio.file.DirectoryStream;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -107,11 +112,19 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        ImageCollection resultCollection = data.getParcelableExtra("ImageCollection");
+
+        collectionViewModel.getImageCollections().remove(resultCollection);
+        collectionViewModel.getImageCollections().add(resultCollection);
+    }
+
+    @Override
     protected void onResume(){
         super.onResume();
 
+        requestCode = getIntent().getIntExtra("REQUEST_CODE", 0);
         if (requestCode != READ_REQUEST_CODE) {
-            Log.e("TEST", "TESTTEST");
             return;
         }
 
@@ -155,18 +168,15 @@ public class MainActivity extends AppCompatActivity {
     private void initAfterPermissionGranted() {
         mDb = AppDatabase.getInstance(this);
 
-        AppExecutors.getInstance().diskIO().execute(() -> {
-            fetchImageCollections();
-        });
-
         initLayout();
 
         AppExecutors.getInstance()
                 .diskIO()
                 .execute(() -> {
+                    fetchImageCollections();
+
                     // 이미지 파일 목록 추출
                     selectedImages = getImagesIfNotProcessed();
-
                     imageOrderIdx = 0;
                     partedImages = splitImagesInDayRange(selectedImages, IMAGE_TIME_RANGE);
 
@@ -402,7 +412,8 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        requestCode = requestCode;
+        getIntent().putExtra("REQUEST_CODE", requestCode);
+
         switch (requestCode) {
             case READ_REQUEST_CODE: {
                 // If request is cancelled, the result arrays are empty.
@@ -451,6 +462,10 @@ public class MainActivity extends AppCompatActivity {
             ImageGroup[] inputGroups = new ImageGroup[groups.size()];
             groups.toArray(inputGroups);
 
+            if (isCancelled()) {
+                return;
+            }
+
             // MLkit labeling thread
             new AsyncLabelingTask((labelGroups) -> {
                 // callback
@@ -481,74 +496,78 @@ public class MainActivity extends AppCompatActivity {
                 // 세 장을 선택
                 result.setRepImages(repImages.subList(0, repImages.size() > 3 ? 3 : repImages.size()));
 
-                collectionViewModel.insert(result);
 
-                listener.onFinished();
+                boolean isResultProcessedAlready = collectionViewModel.getImageCollections().getValue().contains(result);
+                if (!isResultProcessedAlready) {
+                    collectionViewModel.insert(result);
 
-                // 생성된 타임라인 저장 thread
-                AppExecutors.getInstance().diskIO().execute(() -> {
-                    DbImageCollection newDbImageCollection = new ImageCollectionAdapter(result);
+                    // 생성된 타임라인 저장 thread
+                    AppExecutors.getInstance().diskIO().execute(() -> {
+                        DbImageCollection newDbImageCollection = new ImageCollectionAdapter(result);
 
-                    long collectionId = mDb.dbImageCollectionDao().insert(newDbImageCollection);
+                        long collectionId = mDb.dbImageCollectionDao().insert(newDbImageCollection);
 
-                    // DbImageCollection <- DbImageGroup
-                    List<DbImageGroup> newDbImageGroups =
-                            result.getGroups().stream()
-                                    .map(ImageGroupAdapter::new)
+                        // DbImageCollection <- DbImageGroup
+                        List<DbImageGroup> newDbImageGroups =
+                                result.getGroups().stream()
+                                        .map(ImageGroupAdapter::new)
+                                        .collect(Collectors.toList());
+
+                        List<Long> dbImageGroupIds =
+                                mDb.dbImageCollectionDao()
+                                        .insertWithGroups((int) collectionId, newDbImageGroups);
+
+                        List<Long> imageIdsForRepImage = new ArrayList<>();
+
+                        // DbGroup <- DbImage
+                        for (int i = 0; i < dbImageGroupIds.size(); i++) {
+                            ImageGroup ig = result.getGroups().get(i);
+                            List<Image> iImageGroup = ig.getImages();
+
+                            List<DbImage> newDbImages = iImageGroup.stream()
+                                    .map(ImageAdapter::new)
                                     .collect(Collectors.toList());
 
-                    List<Long> dbImageGroupIds =
-                            mDb.dbImageCollectionDao()
-                                    .insertWithGroups((int) collectionId, newDbImageGroups);
+                            List<Long> dbImageIds = new ArrayList<>();
+                            Long groupId = dbImageGroupIds.get(i);
+                            for(DbImage image: newDbImages) {
+                                long dbImageId = mDb.imagesWithImageGroupDao()
+                                        .insertImageWithGroupId(groupId, image);
+                                dbImageIds.add(dbImageId);
 
-                    List<Long> imageIdsForRepImage = new ArrayList<>();
-
-                    // DbGroup <- DbImage
-                    for (int i = 0; i < dbImageGroupIds.size(); i++) {
-                        ImageGroup ig = result.getGroups().get(i);
-                        List<Image> iImageGroup = ig.getImages();
-
-                        List<DbImage> newDbImages = iImageGroup.stream()
-                                .map(ImageAdapter::new)
-                                .collect(Collectors.toList());
-
-                        List<Long> dbImageIds = new ArrayList<>();
-                        Long groupId = dbImageGroupIds.get(i);
-                        for(DbImage image: newDbImages) {
-                            long dbImageId = mDb.imagesWithImageGroupDao()
-                                    .insertImageWithGroupId(groupId, image);
-                            dbImageIds.add(dbImageId);
-
-                            // 대표사진 imageId 값 저장
-                            for (Image rim: repImages) {
-                                if (rim.equals(image.path)) {
-                                    imageIdsForRepImage.add(dbImageId);
+                                // 대표사진 imageId 값 저장
+                                for (Image rim: repImages) {
+                                    if (rim.equals(image.path)) {
+                                        imageIdsForRepImage.add(dbImageId);
+                                    }
                                 }
+                            }
+
+                            // DbImage <- DbLabel
+                            List<LabelGroup> labelGroup = labelGroups.get(i);
+                            for (int j = 0; j < dbImageIds.size(); j++) {
+                                long dbImageId = dbImageIds.get(j);
+                                List<Label> labels = labelGroup.get(j).getLabels();
+                                List<DbLabel> dbLabels = labels.stream()
+                                        .map(LabelAdapter::new)
+                                        .collect(Collectors.toList());
+
+                                mDb.imagesWithImageGroupDao()
+                                        .insertLabelsWithImageId(dbImageId, dbLabels);
+
                             }
                         }
 
-                        // DbImage <- DbLabel
-                        List<LabelGroup> labelGroup = labelGroups.get(i);
-                        for (int j = 0; j < dbImageIds.size(); j++) {
-                            long dbImageId = dbImageIds.get(j);
-                            List<Label> labels = labelGroup.get(j).getLabels();
-                            List<DbLabel> dbLabels = labels.stream()
-                                    .map(LabelAdapter::new)
-                                    .collect(Collectors.toList());
+                        for (long imageId: imageIdsForRepImage) {
+                            DbRepImage repImage = new DbRepImage();
 
-                            mDb.imagesWithImageGroupDao()
-                                    .insertLabelsWithImageId(dbImageId, dbLabels);
-
+                            mDb.dbRepImageDao()
+                                    .insertWithCollectionAndImage(repImage, (int) collectionId, (int) imageId);
                         }
-                    }
+                    });
+                }
 
-                    for (long imageId: imageIdsForRepImage) {
-                        DbRepImage repImage = new DbRepImage();
-
-                        mDb.dbRepImageDao()
-                                .insertWithCollectionAndImage(repImage, (int) collectionId, (int) imageId);
-                    }
-                });
+                listener.onFinished();
             }).execute(inputGroups);
         }
     }
@@ -574,7 +593,6 @@ public class MainActivity extends AppCompatActivity {
             // 일정 시간 단위로 나눔
             TimeGroupAlgorithm algorithm = new TimeGroupAlgorithm();
             List<ImageGroup> processedGroups = algorithm.processImages(inputImages);
-
             publishProgress(processedGroups.size());
 
             return processedGroups;
@@ -586,8 +604,11 @@ public class MainActivity extends AppCompatActivity {
             int groupsCount = groups.size();
             latch = new CountDownLatch(groupsCount);
 
-
             for (ImageGroup group : groups) {
+                if (isCancelled()) {
+                    return;
+                }
+
                 // 시간 그룹 내에서 유사도 클러스터링 실행
                 Image[] timeImages = new Image[group.getImages().size()];
                 tasks.add(new SimGroupAsyncTask(() -> startNextImages(latch)).execute(group.getImages().toArray(timeImages)));
@@ -638,6 +659,9 @@ public class MainActivity extends AppCompatActivity {
         protected List<List<LabelGroup>> doInBackground(ImageGroup... groups) {
             List<List<LabelGroup>> allLabelGroups = new ArrayList<>();
             for (ImageGroup group: groups) {
+                if (isCancelled()) {
+                    break;
+                }
                 List<Image> images = group.getImages();
                 List<LabelGroup> labelGroups = images.stream()
                         .map(x -> processImagesWithMlkit(x))
@@ -651,6 +675,9 @@ public class MainActivity extends AppCompatActivity {
         @Override
         protected void onPostExecute(List<List<LabelGroup>> labels) {
             super.onPostExecute(labels);
+            if (isCancelled()) {
+                return;
+            }
 
             listener.onFinished(labels);
         }

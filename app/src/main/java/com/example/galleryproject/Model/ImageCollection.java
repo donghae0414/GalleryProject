@@ -71,6 +71,19 @@ public class ImageCollection implements Parcelable {
     }
 
     @Override
+    public boolean equals(Object o) {
+        if (o instanceof ImageCollection) {
+            ImageCollection oi = (ImageCollection) o;
+
+            Image oRep = oi.getRepImages().get(0);
+            Image tRep = this.getRepImages().get(0);
+            return tRep.equals(oRep);
+        }
+
+        return false;
+    }
+
+    @Override
     public int describeContents() {
         return 0;
     }

@@ -186,7 +186,7 @@ public class MapFragment extends Fragment implements OnMapReadyCallback,
         @Override
         protected boolean shouldRenderAsCluster(Cluster cluster) {
             // Always render clusters.
-            return cluster.getSize() > 1;
+            return cluster.getSize() > 2;
         }
     }
 
@@ -236,7 +236,7 @@ public class MapFragment extends Fragment implements OnMapReadyCallback,
 
     protected void initClusterManager(boolean isRestore) {
         if (!isRestore) {
-            getMap().moveCamera(CameraUpdateFactory.newLatLngZoom(new LatLng(37.715133, 126.734086), 10f));
+            getMap().moveCamera(CameraUpdateFactory.newLatLngZoom(new LatLng(37.5111024,127.0249376), 12f));
         }
 
         Context context = getContext();

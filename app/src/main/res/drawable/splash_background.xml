@@ -4,8 +4,9 @@
     <item android:drawable="@color/mainWhite" />
     <item>
         <bitmap
-            android:src="@drawable/icon_xxxhdpi_"
+            android:src="@drawable/splash_icon"
             android:gravity="center"
+            android:antialias="true"
             />
     </item>
 </layer-list>
